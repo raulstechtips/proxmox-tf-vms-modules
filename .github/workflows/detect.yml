@@ -1,0 +1,103 @@
+---
+# Finds which module folders changed. Reusable, called by pr.yml and main.yml.
+#
+# Output "modules" is a JSON array of folder names under modules/, ready to
+# feed a matrix:  strategy.matrix.module: ${{ fromJSON(needs.detect.outputs.modules) }}
+#
+# There is no one-module limit here, unlike the VM repository. A module holds
+# no state and no lock, so two modules in one pull request cannot collide.
+name: detect
+
+on:
+  workflow_call:
+    outputs:
+      modules:
+        description: "JSON array of changed module names. Example: [\"base-vm\"]"
+        value: ${{ jobs.detect.outputs.modules }}
+      count:
+        description: "How many modules changed."
+        value: ${{ jobs.detect.outputs.count }}
+
+permissions:
+  contents: read
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      modules: ${{ steps.detect.outputs.modules }}
+      count: ${{ steps.detect.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # the diff needs history, not one commit
+
+      - name: Find the changed modules
+        id: detect
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          case "$EVENT" in
+            pull_request)
+              # Compare against the point the branch left main, not against
+              # the tip of main. Other people's merges must not appear here.
+              git fetch --no-tags origin main
+              BASE=$(git merge-base origin/main HEAD)
+              HEAD_REF=HEAD
+              ;;
+            push)
+              BASE="$BEFORE"
+              HEAD_REF="$AFTER"
+              # A new branch, or a force push, gives a zero or missing SHA.
+              # Fall back to the parent of the commit that started this run.
+              if [ -z "$BASE" ] \
+                 || [ "$BASE" = "0000000000000000000000000000000000000000" ] \
+                 || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+                BASE="${AFTER}^"
+              fi
+              ;;
+            *)
+              echo "::error::detect does not support the event '$EVENT'."
+              exit 1
+              ;;
+          esac
+
+          # modules/<name>/<file...>  ->  <name>
+          # NF>=3 drops anything directly inside modules/ that is not a folder.
+          LIST=$(git diff --name-only "$BASE" "$HEAD_REF" -- 'modules/**' \
+                 | awk -F/ 'NF>=3 {print $2}' | sort -u)
+
+          COUNT=$(printf '%s\n' "$LIST" | grep -c . || true)
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::error::No module changed between $BASE and $HEAD_REF. Put your change under modules/<name>/."
+            exit 1
+          fi
+
+          # A folder must still exist. A deleted module is not a change to tag.
+          MISSING=""
+          while IFS= read -r M; do
+            [ -n "$M" ] || continue
+            [ -d "modules/$M" ] || MISSING="$MISSING $M"
+          done <<< "$LIST"
+          if [ -n "$MISSING" ]; then
+            echo "::error::These module folders were deleted:$MISSING. Delete the module and its tags by hand."
+            exit 1
+          fi
+
+          JSON=$(printf '%s\n' "$LIST" | grep . | jq -R . | jq -sc .)
+
+          {
+            echo "modules=$JSON"
+            echo "count=$COUNT"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Changed modules ($COUNT): $JSON"
+          {
+            echo "### Changed modules"
+            printf '%s\n' "$LIST" | sed 's/^/- /'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,18 @@
+# Terraform working directories. A module never commits these.
+.terraform/
+.terraform.lock.hcl
+
+# A module never holds state. If one of these appears, something ran
+# terraform apply inside this repository by mistake.
+*.tfstate
+*.tfstate.backup
+crash.log
+crash.*.log
+
+# Local overrides
+*.tfvars
+!examples/**/*.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json

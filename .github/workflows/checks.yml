@@ -1,0 +1,88 @@
+---
+# Static checks on each changed module. Reusable, called by pr.yml and main.yml.
+#
+# This repository needs NO secret and NO Infisical identity. A module folder
+# holds no "provider" block, so terraform validate never reads PM_API_URL.
+# Verified: validate returns Success with every PM_* variable unset.
+#
+# Checks are scoped to the changed modules, not the whole repository. An old
+# module that is not formatted must not block a pull request that does not
+# touch it.
+name: checks
+
+on:
+  workflow_call:
+    inputs:
+      modules:
+        description: "JSON array of module names, from detect."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest          # public repository: no self-hosted runner
+    strategy:
+      fail-fast: false              # report every bad module, not only the first
+      matrix:
+        module: ${{ fromJSON(inputs.modules) }}
+    defaults:
+      run:
+        working-directory: modules/${{ matrix.module }}
+    env:
+      TF_IN_AUTOMATION: "1"
+      TF_INPUT: "0"
+      TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.tf-plugin-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.11.0"
+          terraform_wrapper: false     # the wrapper mangles exit codes
+
+      # Terraform reads TF_PLUGIN_CACHE_DIR on EVERY command, fmt included.
+      # If the folder is missing it prints a CLI configuration error. fmt
+      # tolerates it and still exits 0, so the step goes green with a red
+      # error in the log. Make the folder before any terraform command runs.
+      - name: Create the plugin cache directory
+        run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+        working-directory: .
+
+      # Cheapest check. No provider, no network, no secret.
+      - name: Format
+        run: terraform fmt -check -diff
+
+      - name: Restore the provider cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.tf-plugin-cache
+          key: tf-plugins-${{ hashFiles('modules/**/versions.tf') }}
+          restore-keys: tf-plugins-
+
+      # -backend=false: a module has no backend and must never get one.
+      - name: Init
+        run: terraform init -backend=false
+
+      - name: Validate
+        run: terraform validate
+
+      # A module that carries a lock file forces its provider version on to
+      # every caller. The caller's own lock file must decide that.
+      - name: Refuse a committed lock file
+        run: |
+          if git ls-files --error-unmatch .terraform.lock.hcl >/dev/null 2>&1; then
+            echo "::error::modules/${{ matrix.module }}/.terraform.lock.hcl is committed. Remove it; .gitignore already covers it."
+            exit 1
+          fi
+
+      - name: Refuse a backend or provider block
+        run: |
+          set -euo pipefail
+          BAD=$(grep -rlE '^\s*(backend\s+"|provider\s+")' --include='*.tf' . || true)
+          if [ -n "$BAD" ]; then
+            echo "::error::A module must not declare a backend or a provider block. Found in: $BAD"
+            exit 1
+          fi

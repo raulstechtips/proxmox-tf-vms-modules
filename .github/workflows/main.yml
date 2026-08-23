@@ -1,0 +1,110 @@
+---
+# Push to main. This is what a merged pull request produces.
+#
+#   detect  ->  checks  ->  tag
+#
+# The tag job creates <module>/v<VERSION> and a GitHub Release for every
+# module that changed in the merge. A tag is permanent. Nothing here ever
+# moves or deletes one, because a caller pins by tag and a moved tag would
+# change a VM that nobody touched.
+name: main
+
+on:
+  push:
+    branches: [main]
+    paths: ["modules/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: main-tag
+  cancel-in-progress: false     # never cancel a run that is half way through tagging
+
+jobs:
+  detect:
+    uses: ./.github/workflows/detect.yml
+
+  checks:
+    needs: detect
+    uses: ./.github/workflows/checks.yml
+    with:
+      modules: ${{ needs.detect.outputs.modules }}
+
+  tag:
+    needs: [detect, checks]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write           # needed to create the tag and the release
+    strategy:
+      fail-fast: false
+      max-parallel: 1           # two legs must not push tags at the same moment
+      matrix:
+        module: ${{ fromJSON(needs.detect.outputs.modules) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create the tag and the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MOD: ${{ matrix.module }}
+        run: |
+          set -euo pipefail
+
+          FILE="modules/$MOD/VERSION"
+          VER=$(tr -d '[:space:]' < "$FILE")
+          if ! printf '%s' "$VER" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::$FILE holds '$VER'. It must hold exactly X.Y.Z."
+            exit 1
+          fi
+
+          TAG="$MOD/v$VER"
+          SHA=$(git rev-parse HEAD)
+
+          # Is the tag already here? A re-run of a run that half finished is
+          # normal, so the same tag on the same commit is not an error.
+          git fetch --no-tags origin "+refs/tags/$TAG:refs/tags/$TAG" 2>/dev/null || true
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            # rev-list peels an annotated tag down to its commit.
+            EXISTING=$(git rev-list -n 1 "refs/tags/$TAG")
+            if [ "$EXISTING" = "$SHA" ]; then
+              echo "::notice::Tag $TAG already points at $SHA. Nothing to do."
+              echo "- \`$TAG\` already existed (no change)" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "::error::Tag $TAG exists on commit $EXISTING, but this run is $SHA. A version number was used twice. Raise the version in $FILE."
+            exit 1
+          fi
+
+          SRC="git::https://github.com/$GITHUB_REPOSITORY.git//modules/$MOD?ref=$TAG"
+
+          NOTES=$(printf '%s\n' \
+            "Terraform module \`$MOD\`, version \`$VER\`." \
+            "" \
+            "Pin it from a live configuration:" \
+            "" \
+            '```hcl' \
+            "module \"vm\" {" \
+            "  source = \"$SRC\"" \
+            "  # ..." \
+            "}" \
+            '```' \
+            "" \
+            "Commit: $SHA")
+
+          # gh release create makes the tag as well, so this is one step.
+          gh release create "$TAG" \
+            --target "$SHA" \
+            --title "$TAG" \
+            --notes "$NOTES"
+
+          echo "::notice::Created $TAG on $SHA"
+          {
+            echo "### Tagged \`$TAG\`"
+            echo ""
+            echo '```hcl'
+            echo "  source = \"$SRC\""
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
