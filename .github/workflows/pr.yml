@@ -1,0 +1,109 @@
+---
+# Pull request into main.
+#
+#   detect  ->  checks  ->  version-check
+#
+# Nothing is tagged here. This run only proves the change is safe to merge
+# and that every changed module carries a new version number.
+name: pr
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ["modules/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true      # only the newest push to a PR matters
+
+jobs:
+  detect:
+    uses: ./.github/workflows/detect.yml
+
+  checks:
+    needs: detect
+    uses: ./.github/workflows/checks.yml
+    with:
+      modules: ${{ needs.detect.outputs.modules }}
+
+  version-check:
+    needs: [detect, checks]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false          # report every missing bump in one run
+      matrix:
+        module: ${{ fromJSON(needs.detect.outputs.modules) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check the version went up
+        env:
+          MOD: ${{ matrix.module }}
+        run: |
+          set -euo pipefail
+
+          FILE="modules/$MOD/VERSION"
+          if [ ! -f "$FILE" ]; then
+            echo "::error::$FILE is missing. Every module needs a VERSION file that holds X.Y.Z."
+            exit 1
+          fi
+
+          NEW=$(tr -d '[:space:]' < "$FILE")
+          if ! printf '%s' "$NEW" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::$FILE holds '$NEW'. It must hold exactly X.Y.Z, for example 1.2.0."
+            exit 1
+          fi
+
+          TAG="$MOD/v$NEW"
+
+          git fetch --no-tags origin main
+
+          if git cat-file -e "origin/main:$FILE" 2>/dev/null; then
+            OLD=$(git show "origin/main:$FILE" | tr -d '[:space:]')
+          else
+            OLD=""            # a brand new module has no version on main
+          fi
+
+          if [ -z "$OLD" ]; then
+            echo "New module '$MOD'. First version $NEW."
+          else
+            if [ "$OLD" = "$NEW" ]; then
+              echo "::error::$MOD changed but $FILE still holds $OLD. Raise it, then push again."
+              exit 1
+            fi
+            # sort -V puts the higher version last. The new one must be last.
+            HIGHEST=$(printf '%s\n%s\n' "$OLD" "$NEW" | sort -V | tail -1)
+            if [ "$HIGHEST" != "$NEW" ]; then
+              echo "::error::$MOD went backwards: main holds $OLD, this branch holds $NEW."
+              exit 1
+            fi
+            echo "$MOD: $OLD -> $NEW"
+          fi
+
+          # A version that already has a tag must never be used again. Callers
+          # pin by tag, so a moved tag changes a VM that nobody touched.
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $TAG already exists. Choose a higher version."
+            exit 1
+          fi
+
+          {
+            echo "### $MOD"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| On main | \`${OLD:-none}\` |"
+            echo "| This branch | \`$NEW\` |"
+            echo "| Tag made on merge | \`$TAG\` |"
+            echo ""
+            echo "Callers pin it like this:"
+            echo ""
+            echo '```hcl'
+            echo "  source = \"git::https://github.com/$GITHUB_REPOSITORY.git//modules/$MOD?ref=$TAG\""
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
