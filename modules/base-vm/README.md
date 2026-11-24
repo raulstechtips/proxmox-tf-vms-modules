@@ -6,7 +6,7 @@ Makes one Proxmox VM as a full clone of a template, set up by cloud-init.
 
 ```hcl
 module "vm" {
-  source = "git::https://github.com/raulstechtips/proxmox-tf-vms-modules.git//modules/base-vm?ref=base-vm/v1.0.0"
+  source = "git::https://github.com/raulstechtips/proxmox-tf-vms-modules.git//modules/base-vm?ref=base-vm/v1.1.0"
 
   env         = "dev"
   name        = "ansible-builder"
@@ -35,11 +35,18 @@ The VM name is built as `<env>-<name>-<agent>`. The example above makes
 | `clone` | `string` | Name of the Proxmox template to clone. |
 | `cores` | `number` | Number of CPU cores. |
 | `memory` | `number` | Memory in MiB. Example: `2048`. |
+| `discard` | `bool` | Allow TRIM on virtio0. Optional; default `false`. |
 | `size` | `string` | Size of the virtio0 disk, with a unit. Example: `20G`. |
 | `ipconfig0` | `string` | Cloud-init network line. Example: `ip=10.0.0.10/24,gw=10.0.0.1`. |
 | `ciuser` | `string` | Default cloud-init user. |
 
-Every input is required. There are no defaults.
+All inputs except `discard` are required. `discard` defaults to `false`.
+
+Set `discard = true` to allow the guest to return unused disk blocks to
+thin-provisioned storage. The guest must run TRIM (for example, through
+`fstrim.timer`). This does not delete files or configure a guest TRIM schedule.
+If Proxmox shows the disk change as pending, a full shutdown and start is
+needed to activate it.
 
 > `agent` is the instance number. It is not the QEMU guest agent setting. The
 > guest agent is on and is not configurable in this version.

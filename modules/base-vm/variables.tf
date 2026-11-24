@@ -47,3 +47,9 @@ variable "ciuser" {
   description = "Default cloud-init user."
   type        = string
 }
+
+variable "discard" {
+  description = "Allow guest TRIM/discard requests on the virtio0 disk."
+  type        = bool
+  default     = false
+}
