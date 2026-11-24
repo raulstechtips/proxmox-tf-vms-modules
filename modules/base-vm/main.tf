@@ -26,6 +26,7 @@ resource "proxmox_vm_qemu" "your-vm" {
         disk {
           storage = "local-lvm"
           size    = var.size # Set the storage size here
+          discard = var.discard
         }
 
       }
