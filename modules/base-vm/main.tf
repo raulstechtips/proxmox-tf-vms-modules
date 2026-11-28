@@ -17,14 +17,14 @@ resource "proxmox_vm_qemu" "your-vm" {
     ide {
       ide3 {
         cloudinit {
-          storage = "local-lvm"
+          storage = var.storage
         }
       }
     }
     virtio {
       virtio0 {
         disk {
-          storage = "local-lvm"
+          storage = var.storage
           size    = var.size # Set the storage size here
         }
 

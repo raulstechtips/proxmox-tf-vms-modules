@@ -23,6 +23,12 @@ variable "size" {
   type        = string
 }
 
+variable "storage" {
+  description = "Proxmox storage ID for the VM disk and the cloud-init drive. Example: local-lvm."
+  type        = string
+  default     = "local-lvm"
+}
+
 variable "clone" {
   description = "Name of the Proxmox template to clone."
   type        = string

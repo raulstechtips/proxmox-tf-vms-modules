@@ -38,8 +38,9 @@ The VM name is built as `<env>-<name>-<agent>`. The example above makes
 | `size` | `string` | Size of the virtio0 disk, with a unit. Example: `20G`. |
 | `ipconfig0` | `string` | Cloud-init network line. Example: `ip=10.0.0.10/24,gw=10.0.0.1`. |
 | `ciuser` | `string` | Default cloud-init user. |
+| `storage` | `string` | Proxmox storage ID for the VM disk and the cloud-init drive. Optional. Default: `local-lvm`. |
 
-Every input is required. There are no defaults.
+Every input is required, except `storage`.
 
 > `agent` is the instance number. It is not the QEMU guest agent setting. The
 > guest agent is on and is not configurable in this version.
@@ -62,8 +63,7 @@ version. They become inputs in a later version, with these as the defaults.
 
 | Setting | Value |
 | --- | --- |
-| Disk storage | `local-lvm` |
-| Cloud-init drive | `ide3` on `local-lvm` |
+| Cloud-init drive | `ide3` |
 | Boot disk | `virtio0` |
 | SCSI controller | `virtio-scsi-pci` |
 | Network bridge | `vmbr0`, model `virtio` |
